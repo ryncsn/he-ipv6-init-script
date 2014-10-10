@@ -115,7 +115,7 @@ while [ true ] ; do
 		IPADR=$(get_ip)
 	done
 	$(make_route)
-	echo "$TUNNEL_NAME: Client IPv4 address changed to $(IPADR)."
+	echo "$TUNNEL_NAME: Client IPv4 address changed to ${IPADR}."
 	ip tunnel change $TUNNEL_NAME mode sit remote $SERVER_IPV4_ADDRESS local $IPADR ttl 255
 
 done
