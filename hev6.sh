@@ -1,16 +1,19 @@
 #!/bin/bash
 INTERFACE=ppp0
 TUNNEL_NAME=hev6
+ROUTER_INTERFACE=eth0
 
 USERNAME=
 PASSWD=
 TUNNEL_ID=
 SERVER_IPV4_ADDRESS=
 CLIENT_IPV6_ADDRESS=
+ROUTED_IPV6_ADDRESS=
 #CLIENT_IPV4_ADDRESS=
 
 MAKE_ROUTE=yes
 
+HE_IP_DETECT=no
 HE_PING_SERVER=66.220.2.74
 HE_IP_SUBMIT_SERVER=64.62.200.2
 
@@ -19,7 +22,17 @@ SLEEP_TIME=10
 PID_FILE="/run/hev6.pid"
 
 get_ip(){
-	echo `ip addr show dev $INTERFACE | grep "inet" | awk '{print $2}'`
+	echo `ip addr show dev $INTERFACE | grep "inet" | head -1 | awk '{print $2}'`
+}
+
+wait_for_ip(){
+	IPADR=$(get_ip)
+	while [ -z $IPADR ] ; do
+		ifup $INTERFACE
+		sleep $SLEEP_TIME
+		IPADR=$(get_ip)
+	done
+	echo $IPADR
 }
 
 make_route(){
@@ -32,7 +45,7 @@ make_route(){
 	fi
 }
 
-ip_change_detect(){
+wait_for_ip_change(){
 	DEV=$INTERFACE
 
 	ORI_IP=$(get_ip)
@@ -50,22 +63,23 @@ ip_change_detect(){
 	done
 }
 
-if [ `/bin/whoami` != "root" ] ; then
+if [ `whoami` != "root" ] ; then
 	echo "Thsi script must be run as root, exiting."
 	exit
 fi
 
+
 if [ "$1" == "listen" ] ; then
-	if [ "$PID_FILE" ] ; then
-		echo $$ > $PID_FILE
-	fi
-	$(ip_change_detect)
+	$(wait_for_ip_change)
 	exit 0
+fi
+
+if [ -f "$PID_FILE" ] ; then
+	kill -TERM -$(cat $PID_FILE)
 fi
 
 if [ "$1" == "clear" ] ; then
 	if [ -f "$PID_FILE" ] ; then
-		kill $(cat $PID_FILE)
 		rm "$PID_FILE"
 	fi
 	ip link set $TUNNEL_NAME down 
@@ -80,16 +94,13 @@ if [ "$1" == "clear" ] ; then
 	exit 0
 fi
 
+echo $$ > $PID_FILE
+
 echo "$TUNNEL_NAME: $TUNNEL_NAME initiallizing."
 
-IPADR=$(get_ip)
-while [ -z $IPADR ] ; do
-	sleep $SLEEP_TIME
-	IPADR=$(get_ip)
-done
+IPADR=$(wait_for_ip)
 
 $(make_route)
-sleep 1
 
 echo "Setting up $TUNNEL_NAME..."
 ip tunnel add $TUNNEL_NAME mode sit remote $SERVER_IPV4_ADDRESS local $IPADR ttl 255
@@ -99,21 +110,24 @@ ip addr add $CLIENT_IPV6_ADDRESS dev $TUNNEL_NAME
 ip route add ::/0 dev $TUNNEL_NAME
 #echo "Set tunnel up."
 ip link set $TUNNEL_NAME up
+#echo "Set up routing."
+ip route add $ROUTED_IPV6_ADDRESS dev $ROUTER_INTERFACE
 
+#Updata client ip address on server and wait for ip change
 while [ true ] ; do
 
 	#Update server config
 	#echo "Updating client ipv4 address on tunnel broker server."
 	wget -O /dev/null "https://$USERNAME:$PASSWD@ipv4.tunnelbroker.net/nic/update?hostname=$TUNNEL_ID&myip=$IPADR" &>/dev/null
+
 	$0 "listen" & #Wait for ip to change
 	echo "$TUNNEL_NAME: $TUNNEL_NAME is up."
 	wait
+
+	#IP Changed
 	echo "$TUNNEL_NAME: Client IPv4 address changed, waiting for $INTERFACE to assign a new ip."
-	IPADR=$(get_ip)
-	while [ -z $IPADR ] ; do
-		sleep $SLEEP_TIME
-		IPADR=$(get_ip)
-	done
+	IPADR=$(wait_for_ip)
+
 	$(make_route)
 	echo "$TUNNEL_NAME: Client IPv4 address changed to ${IPADR}."
 	ip tunnel change $TUNNEL_NAME mode sit remote $SERVER_IPV4_ADDRESS local $IPADR ttl 255
